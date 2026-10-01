@@ -1,5 +1,5 @@
 
-```# Полное руководство: XMPP-сервер Prosody в Docker для Gajim
+# Полное руководство: XMPP-сервер Prosody в Docker для Gajim
 
 **Проверено на:** Linux Mint 22 «Zena» (база Ubuntu 24.04 noble) · Docker 29.x · Gajim (Windows)  
 **Домен:** `smwrap.ru` → A-запись указывает на белый IP `109.203.192.122`  

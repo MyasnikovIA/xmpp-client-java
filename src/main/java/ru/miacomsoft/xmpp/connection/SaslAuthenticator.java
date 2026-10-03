@@ -14,15 +14,21 @@ public class SaslAuthenticator {
     /**
      * Извлекает username из JID (обрезает @domain и /resource).
      * myasnikovia@smwrap.ru → myasnikovia
+     *
+     * @throws IllegalArgumentException если jid null/пустой или username пустой
      */
     private static String extractUsername(String jid) {
-        if (jid == null) return null;
-        // отрезаем resource
+        if (jid == null || jid.isEmpty()) {
+            throw new IllegalArgumentException("JID не может быть null или пустым");
+        }
         int slash = jid.indexOf('/');
         String bare = slash > 0 ? jid.substring(0, slash) : jid;
-        // отрезаем @domain
         int at = bare.indexOf('@');
-        return at > 0 ? bare.substring(0, at) : bare;
+        String username = at > 0 ? bare.substring(0, at) : bare;
+        if (username.isEmpty()) {
+            throw new IllegalArgumentException("Не удалось извлечь username из JID: " + jid);
+        }
+        return username;
     }
 
     /**
@@ -32,6 +38,13 @@ public class SaslAuthenticator {
      */
     public static String plain(String jid, String password) {
         String username = extractUsername(jid);
+        if (password == null) {
+            throw new IllegalArgumentException("Пароль не может быть null");
+        }
+        if (username.indexOf('\0') >= 0 || password.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException(
+                    "Username и пароль не должны содержать NUL-символ");
+        }
         String raw = "\0" + username + "\0" + password;
         return Base64.getEncoder().encodeToString(
                 raw.getBytes(StandardCharsets.UTF_8));
@@ -73,6 +86,16 @@ public class SaslAuthenticator {
                 if (r == null || s == null || i < 0) {
                     throw new XmppException("SCRAM: неверный server-first");
                 }
+                // КРИТИЧНО: серверный nonce ОБЯЗАН начинаться с нашего client nonce.
+                // Иначе — MITM или сломанный сервер.
+                if (!r.startsWith(cnonce)) {
+                    throw new XmppException(
+                            "SCRAM: server nonce не начинается с client nonce "
+                                    + "(возможна MITM-атака)");
+                }
+                if (i < 4096) {
+                    throw new XmppException("SCRAM: слишком мало итераций: " + i);
+                }
                 byte[] salt = Base64.getDecoder().decode(s);
                 byte[] saltedPassword = pbkdf2(password.toCharArray(), salt, i, 160);
 
@@ -106,7 +129,9 @@ public class SaslAuthenticator {
                 if (part.startsWith("v=")) v = part.substring(2);
             }
             if (v == null) throw new XmppException("SCRAM: нет v=");
-            return v.equals(serverSignature);
+            byte[] expected = serverSignature.getBytes(StandardCharsets.UTF_8);
+            byte[] actual = v.getBytes(StandardCharsets.UTF_8);
+            return MessageDigest.isEqual(expected, actual);
         }
 
         private static byte[] pbkdf2(char[] password, byte[] salt, int iterations, int bits)

@@ -27,6 +27,9 @@ public class XmppClient implements Closeable {
     private String password;
     private String fullJid;
     private String bareJid;
+    // Поле класса
+    private volatile long lastActivity = System.currentTimeMillis();
+    private static final long KEEPALIVE_INTERVAL_MS = 30_000;
 
     private XmppConnection connection;
     private final EventBus eventBus = new EventBus();
@@ -299,31 +302,84 @@ public class XmppClient implements Closeable {
     // Чтение станз (reader loop)
     // ============================================================
     private void readLoop() {
+        Thread keepAlive = new Thread(this::keepAliveLoop, "xmpp-keepalive");
+        keepAlive.setDaemon(true);
+        keepAlive.start();
+
         while (running) {
             try {
                 String xml = connection.readStanza();
+                lastActivity = System.currentTimeMillis();
                 if (xml == null || xml.isEmpty()) continue;
 
                 String trimmed = xml.trim();
                 if (trimmed.isEmpty()) continue;
 
-                // Пропускаем XML-пролог и <stream:stream>, если просочились
                 if (trimmed.startsWith("<?xml")) continue;
                 if (trimmed.startsWith("<stream:stream")) continue;
 
                 log.debug("📥 Recv: {}", trimmed);
                 dispatch(trimmed);
-            } catch (Exception e) {
+
+            } catch (XmppException e) {
+                // Таймаут — это НОРМА, не ошибка. Продолжаем цикл.
+                if (isTimeout(e)) {
+                    log.debug("Таймаут чтения — продолжаем");
+                    continue;
+                }
                 if (running) {
                     log.warn("Ошибка чтения: {}", e.getMessage());
                     eventBus.publish(new ConnectionEvent(
                             ConnectionEvent.Kind.ERROR, e.getMessage()));
                 }
                 break;
+            } catch (Exception e) {
+                if (running) {
+                    log.warn("Неожиданная ошибка в readLoop: {}", e.getMessage(), e);
+                }
+                break;
             }
         }
     }
 
+    /**
+     * Проверяет, является ли исключение таймаутом (по cause или сообщению).
+     */
+    private boolean isTimeout(Throwable e) {
+        Throwable cur = e;
+        while (cur != null) {
+            if (cur instanceof java.net.SocketTimeoutException) return true;
+            cur = cur.getCause();
+        }
+        String msg = e.getMessage();
+        return msg != null && msg.contains("Таймаут");
+    }
+
+    /**
+     * Периодически шлёт пробел как keep-alive (XMPP whitespace ping).
+     * Если был трафик за последние 30 секунд — не шлём.
+     */
+    private void keepAliveLoop() {
+        while (running) {
+            try {
+                Thread.sleep(5_000);
+            } catch (InterruptedException e) {
+                return;
+            }
+            if (!running) return;
+            long idle = System.currentTimeMillis() - lastActivity;
+            if (idle >= KEEPALIVE_INTERVAL_MS) {
+                try {
+                    connection.send(" ");
+                    lastActivity = System.currentTimeMillis();
+                    log.debug("keep-alive: отправлен пробел");
+                } catch (Exception e) {
+                    log.debug("keep-alive не удался: {}", e.getMessage());
+                    return;
+                }
+            }
+        }
+    }
     private void dispatch(String xml) {
         try {
             Document doc = XmlUtil.parse(wrapForParsing(xml));
@@ -408,7 +464,9 @@ public class XmppClient implements Closeable {
     }
 
     public void disconnect() {
+        if (!running && connection == null) return;
         running = false;
+
         try {
             getModule(PresenceModule.class).sendUnavailable();
             connection.send("</stream:stream>");
@@ -419,6 +477,16 @@ public class XmppClient implements Closeable {
         }
 
         if (connection != null) connection.close();
+
+        if (readerThread != null) {
+            try {
+                readerThread.join(2_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            readerThread = null;
+        }
+
         eventBus.publish(new ConnectionEvent(
                 ConnectionEvent.Kind.DISCONNECTED, "Отключено"));
     }

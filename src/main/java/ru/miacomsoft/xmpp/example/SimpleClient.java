@@ -9,23 +9,36 @@ import java.util.Scanner;
 public class SimpleClient {
 
     public static void main(String[] args) throws Exception {
-        String host = "smwrap.ru";
-        int port = 5222;
-        String jid = "myasnikovia@smwrap.ru";
-        String password = "PASS";
+        String host = System.getenv().getOrDefault("XMPP_HOST", "smwrap.ru");
+        String portStr = System.getenv().getOrDefault("XMPP_PORT", "5222");
+        int port = Integer.parseInt(portStr);
+        String jid = System.getenv("XMPP_JID");
+        String password = System.getenv("XMPP_PASSWORD");
 
-        XmppClient client = new XmppClient(host, port);
+
+        if (jid == null || password == null) {
+            // Fallback: аргументы командной строки
+            if (args.length >= 2) {
+                jid = args[0];
+                password = args[1];
+            }
+        }
+        if (jid == null || password == null) {
+            System.err.println("Задайте XMPP_JID и XMPP_PASSWORD (или передайте как аргументы)");
+            System.exit(1);
+            return;
+        }
+
+        XmppClient xmppClient = new XmppClient(host, port);
 
         // ---- Слушатели событий ----
-        client.getEventBus().addMessageListener(ev -> {
+        xmppClient.getEventBus().addMessageListener(ev -> {
             switch (ev.getKind()) {
                 case RECEIVED:
-                    System.out.println("📩 [" + ev.getFrom() + "]: "
-                            + ev.getMessage().getBody());
+                    System.out.println("📩 [" + ev.getFrom() + "]: " + ev.getMessage().getBody());
                     break;
                 case SENT:
-                    System.out.println("📤 Отправлено: "
-                            + ev.getMessage().getBody());
+                    System.out.println("📤 Отправлено: " + ev.getMessage().getBody());
                     break;
                 case DELIVERED:
                     System.out.println("✓✓ Доставлено для " + ev.getFrom());
@@ -42,63 +55,66 @@ public class SimpleClient {
             }
         });
 
-        client.getEventBus().addPresenceListener(ev -> {
+        xmppClient.getEventBus().addPresenceListener(ev -> {
             System.out.println("👤 " + ev.getFrom()
                     + (ev.isOnline() ? " онлайн" : " офлайн"));
         });
 
         // ---- Подключение ----
         System.out.println("Подключаемся к " + host + ":" + port);
-        client.connect(jid, password);
+        try {
+            xmppClient.connect(jid, password);
 
-        System.out.println("Контакты:");
-        for (Contact c : client.getRosterModule().getContacts().values()) {
-            System.out.println("  " + c.getJid()
-                    + (c.isOnline() ? " ●" : " ○"));
-        }
-
-        // ---- Интерактив ----
-        Scanner scanner = new Scanner(System.in);
-        System.out.println("\nКоманды:");
-        System.out.println("  /to <jid>      — открыть чат");
-        System.out.println("  /history <n>   — история (MAM)");
-        System.out.println("  /quit          — выход");
-        System.out.println("  <текст>        — отправить сообщение");
-
-        while (true) {
-            System.out.print("> ");
-            String line = scanner.nextLine().trim();
-            if (line.isEmpty()) continue;
-
-            if (line.equals("/quit")) break;
-
-            if (line.startsWith("/to ")) {
-                String to = line.substring(4).trim();
-                client.setCurrentChat(to);
-                System.out.println("Чат с " + to);
-                continue;
+            System.out.println("Контакты:");
+            for (Contact c : xmppClient.getRosterModule().getContacts().values()) {
+                System.out.println("  " + c.getJid()
+                        + (c.isOnline() ? " ●" : " ○"));
             }
 
-            if (line.startsWith("/history ")) {
-                int n = Integer.parseInt(line.substring(9).trim());
-                if (client.getCurrentChat() != null) {
-                    client.getModule(MamModule.class)
-                            .requestMam(client.getCurrentChat(), n);
-                    System.out.println("Запрошена история");
-                } else {
-                    System.out.println("Сначала /to <jid>");
+            // ---- Интерактив ----
+            Scanner scanner = new Scanner(System.in);
+            System.out.println("\nКоманды:");
+            System.out.println("  /to <jid>      — открыть чат");
+            System.out.println("  /history <n>   — история (MAM)");
+            System.out.println("  /quit          — выход");
+            System.out.println("  <текст>        — отправить сообщение");
+
+            while (true) {
+                System.out.print("> ");
+                String line = scanner.nextLine().trim();
+                if (line.isEmpty()) continue;
+
+                if (line.equals("/quit")) break;
+
+                if (line.startsWith("/to ")) {
+                    String to = line.substring(4).trim();
+                    xmppClient.setCurrentChat(to);
+                    System.out.println("Чат с " + to);
+                    continue;
                 }
-                continue;
-            }
 
-            if (client.getCurrentChat() != null) {
-                client.sendMessage(client.getCurrentChat(), line);
-            } else {
-                System.out.println("Сначала выберите чат: /to <jid>");
+                if (line.startsWith("/history ")) {
+                    int n = Integer.parseInt(line.substring(9).trim());
+                    if (xmppClient.getCurrentChat() != null) {
+                        xmppClient.getModule(MamModule.class)
+                                .requestMam(xmppClient.getCurrentChat(), n);
+                        System.out.println("Запрошена история");
+                    } else {
+                        System.out.println("Сначала /to <jid>");
+                    }
+                    continue;
+                }
+
+                if (xmppClient.getCurrentChat() != null) {
+                    xmppClient.sendMessage(xmppClient.getCurrentChat(), line);
+                } else {
+                    System.out.println("Сначала выберите чат: /to <jid>");
+                }
             }
+        } finally {
+            xmppClient.disconnect();
+            System.out.println("Пока!");
         }
-
-        client.disconnect();
-        System.out.println("Пока!");
     }
+
 }

@@ -27,8 +27,43 @@ public class XmlUtil {
         return el.hasAttribute(name) ? el.getAttribute(name) : null;
     }
 
+    /**
+     * Возвращает ПЕРВОГО прямого ребёнка-элемента с указанным localName.
+     * Не ищет во всём поддереве (в отличие от getElementsByTagName).
+     */
     public static Element firstChild(Element parent, String name) {
-        NodeList list = parent.getElementsByTagName(name);
-        return list.getLength() > 0 ? (Element) list.item(0) : null;
+        if (parent == null) return null;
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node n = children.item(i);
+            if (n.getNodeType() != Node.ELEMENT_NODE) continue;
+            Element el = (Element) n;
+            String local = el.getLocalName();
+            if (local == null) {
+                // namespace-aware парсер может вернуть null для элементов без namespace
+                local = el.getNodeName();
+                int colon = local.indexOf(':');
+                if (colon >= 0) local = local.substring(colon + 1);
+            }
+            if (name.equals(local)) {
+                return el;
+            }
+        }
+        return null;
     }
+    /**
+     * Безопасно возвращает localName элемента (без namespace-префикса).
+     * Никогда не возвращает null.
+     */
+    public static String localName(Element el) {
+        if (el == null) return "";
+        String local = el.getLocalName();
+        if (local == null || local.isEmpty()) {
+            local = el.getNodeName();
+            int colon = local.indexOf(':');
+            if (colon >= 0) local = local.substring(colon + 1);
+        }
+        return local;
+    }
+
 }

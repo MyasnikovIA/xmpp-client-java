@@ -19,6 +19,7 @@ public class XmppConnection implements Closeable {
     private Socket socket;
     private InputStream inputStream;
     private OutputStream outputStream;
+    private boolean trustAllCertificates = false;
 
     /**
      * Накопительный буфер строк. Из него вырезаются готовые станзы.
@@ -45,44 +46,61 @@ public class XmppConnection implements Closeable {
     }
 
     public void startTls() throws XmppException {
+        SSLSocket sslSocket = null;
         try {
-            // Создаём SSLContext с TrustManager, который принимает ЛЮБОЙ сертификат
-            javax.net.ssl.SSLContext sslContext = javax.net.ssl.SSLContext.getInstance("TLS");
-            sslContext.init(
-                    null,
-                    new javax.net.ssl.TrustManager[] {
-                            new javax.net.ssl.X509TrustManager() {
-                                public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                                    return new java.security.cert.X509Certificate[0];
-                                }
-                                public void checkClientTrusted(
-                                        java.security.cert.X509Certificate[] certs, String authType) {
-                                    // доверяем всем
-                                }
-                                public void checkServerTrusted(
-                                        java.security.cert.X509Certificate[] certs, String authType) {
-                                    // доверяем всем
-                                }
+            javax.net.ssl.SSLContext sslContext =
+                    javax.net.ssl.SSLContext.getInstance("TLS");
+
+            javax.net.ssl.TrustManager[] trustManagers;
+            if (trustAllCertificates) {
+                trustManagers = new javax.net.ssl.TrustManager[] {
+                        new javax.net.ssl.X509TrustManager() {
+                            public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                                return new java.security.cert.X509Certificate[0];
                             }
-                    },
-                    new java.security.SecureRandom()
-            );
+                            public void checkClientTrusted(
+                                    java.security.cert.X509Certificate[] certs, String authType) {
+                                // доверяем всем (только для тестов)
+                            }
+                            public void checkServerTrusted(
+                                    java.security.cert.X509Certificate[] certs, String authType) {
+                                // доверяем всем (только для тестов)
+                            }
+                        }
+                };
+            } else {
+                // Штатный TrustManager из JVM — проверяет цепочку сертификатов.
+                javax.net.ssl.TrustManagerFactory tmf =
+                        javax.net.ssl.TrustManagerFactory.getInstance(
+                                javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
+                tmf.init((java.security.KeyStore) null);
+                trustManagers = tmf.getTrustManagers();
+            }
+
+            sslContext.init(null, trustManagers, new java.security.SecureRandom());
 
             SSLSocketFactory factory = sslContext.getSocketFactory();
-            SSLSocket sslSocket = (SSLSocket) factory.createSocket(
-                    socket, host, port, true);
+            sslSocket = (SSLSocket) factory.createSocket(socket, host, port, true);
 
-            // Отключаем проверку hostname (иначе self-signed с неправильным CN не сработает)
+            // Включаем проверку hostname (SNI + verify CN/SAN).
+            javax.net.ssl.SSLParameters params = sslSocket.getSSLParameters();
+            params.setEndpointIdentificationAlgorithm("HTTPS");
+            sslSocket.setSSLParameters(params);
+
             sslSocket.setEnabledProtocols(new String[]{"TLSv1.2", "TLSv1.3"});
-
             sslSocket.startHandshake();
 
+            // Успех — заменяем сокет.
             socket = sslSocket;
             inputStream = socket.getInputStream();
             outputStream = socket.getOutputStream();
             rawBuffer.setLength(0);
-            log.info("TLS установлен");
+            log.info("TLS установлен (trustAll={}, hostnameVerify=true)", trustAllCertificates);
         } catch (Exception e) {
+            // Закрываем недоделанный SSL-сокет, чтобы не текла память/дескрипторы.
+            if (sslSocket != null) {
+                try { sslSocket.close(); } catch (IOException ignored) {}
+            }
             throw new XmppException("Ошибка STARTTLS", e);
         }
     }
@@ -225,4 +243,10 @@ public class XmppConnection implements Closeable {
     public void close() {
         try { if (socket != null) socket.close(); } catch (IOException ignored) {}
     }
+
+    /** Включает режим "доверять всем" — ТОЛЬКО для тестов/self-signed. */
+    public void setTrustAllCertificates(boolean trustAll) {
+        this.trustAllCertificates = trustAll;
+    }
+
 }

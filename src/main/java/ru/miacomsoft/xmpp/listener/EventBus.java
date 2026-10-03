@@ -25,20 +25,40 @@ public class EventBus {
     public void addConnectionListener(Consumer<ConnectionEvent> l) { connectionListeners.add(l); }
 
     public void publish(XmppEvent e) {
-        try {
-            globalListeners.forEach(l -> l.accept(e));
-            if (e instanceof MessageEvent) {
-                MessageEvent me = (MessageEvent) e;
-                messageListeners.forEach(l -> l.accept(me));
-            } else if (e instanceof PresenceEvent) {
-                PresenceEvent pe = (PresenceEvent) e;
-                presenceListeners.forEach(l -> l.accept(pe));
-            } else if (e instanceof ConnectionEvent) {
-                ConnectionEvent ce = (ConnectionEvent) e;
-                connectionListeners.forEach(l -> l.accept(ce));
+        for (Consumer<XmppEvent> l : globalListeners) {
+            try {
+                l.accept(e);
+            } catch (Exception ex) {
+                log.warn("Ошибка в global listener: {}", ex.getMessage(), ex);
             }
-        } catch (Exception ex) {
-            log.warn("Ошибка в listener: {}", ex.getMessage());
+        }
+        if (e instanceof MessageEvent) {
+            MessageEvent me = (MessageEvent) e;
+            for (Consumer<MessageEvent> l : messageListeners) {
+                try {
+                    l.accept(me);
+                } catch (Exception ex) {
+                    log.warn("Ошибка в message listener: {}", ex.getMessage(), ex);
+                }
+            }
+        } else if (e instanceof PresenceEvent) {
+            PresenceEvent pe = (PresenceEvent) e;
+            for (Consumer<PresenceEvent> l : presenceListeners) {
+                try {
+                    l.accept(pe);
+                } catch (Exception ex) {
+                    log.warn("Ошибка в presence listener: {}", ex.getMessage(), ex);
+                }
+            }
+        } else if (e instanceof ConnectionEvent) {
+            ConnectionEvent ce = (ConnectionEvent) e;
+            for (Consumer<ConnectionEvent> l : connectionListeners) {
+                try {
+                    l.accept(ce);
+                } catch (Exception ex) {
+                    log.warn("Ошибка в connection listener: {}", ex.getMessage(), ex);
+                }
+            }
         }
     }
 }

@@ -43,12 +43,12 @@ public class XmppClient implements Closeable {
         this.host = host;
         this.port = port;
 
-        // Регистрация модулей — легко добавлять новые
         registerModule(new RosterModule());
         registerModule(new MessageModule());
         registerModule(new PresenceModule());
         registerModule(new MamModule());
         registerModule(new MucModule());
+        registerModule(new RegistrationModule());
     }
 
     /**
@@ -494,5 +494,47 @@ public class XmppClient implements Closeable {
     @Override
     public void close() {
         disconnect();
+    }
+    /**
+     * Удаляет текущий аккаунт (XEP-0077 §3.2).
+     * Требует активной сессии. После успеха соединение закрывается.
+     */
+    public void deleteAccount() throws XmppException {
+        RegistrationModule reg = getModule(RegistrationModule.class);
+        if (reg == null) throw new XmppException("RegistrationModule не зарегистрирован");
+
+        String id = "del_" + UUID.randomUUID();
+        connection.send(reg.buildRemoveAccount(id));
+
+        for (int i = 0; i < 20; i++) {
+            String resp = connection.readStanza();
+            if (resp == null) continue;
+            String trimmed = resp.trim();
+            if (trimmed.startsWith("<?xml")) continue;
+            if (trimmed.startsWith("<stream:stream")) continue;
+            try {
+                Document doc = XmlUtil.parse(wrapForParsing(trimmed));
+                Element root = doc.getDocumentElement();
+                Element child = null;
+                for (int k = 0; k < root.getChildNodes().getLength(); k++) {
+                    if (root.getChildNodes().item(k).getNodeType()
+                            == Element.ELEMENT_NODE) {
+                        child = (Element) root.getChildNodes().item(k);
+                        break;
+                    }
+                }
+                if (child == null) continue;
+                if (!"iq".equals(XmlUtil.localName(child))) continue;
+                if (!id.equals(XmlUtil.attr(child, "id"))) continue;
+                reg.checkIqResult(child);
+                disconnect();
+                return;
+            } catch (XmppException e) {
+                throw e;
+            } catch (Exception e) {
+                log.debug("deleteAccount: пропуск станзы: {}", e.getMessage());
+            }
+        }
+        throw new XmppException("Не дождались ответа на удаление аккаунта");
     }
 }

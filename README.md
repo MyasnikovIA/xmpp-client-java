@@ -25,11 +25,187 @@ Java библиотека для работы с ICQ сервером Jabber
 
 ---
 
+## 🆕 Регистрация нового пользователя (XEP-0077)
+
+Библиотека умеет создавать новый XMPP-аккаунт прямо из кода — без использования `prosodyctl` или админки сервера.
+
+- **XEP-0077** (In-Band Registration) — запрос формы, submit, удаление аккаунта
+- **XEP-0004** (Data Forms) — поддержка как современных data-form, так и классических форм
+- **Отдельный XMPP-стрим** — регистрация не конфликтует с аутентификацией (сервер не разрешает создавать нового пользователя из аутентифицированной сессии)
+- **Расшифровка ошибок** — `conflict`, `not-allowed`, `feature-not-implemented` и др. превращаются в человекочитаемые сообщения
+
+### Простой случай: логин + пароль
+
+```java
+import ru.miacomsoft.xmpp.RegistrationClient;
+
+RegistrationClient reg = new RegistrationClient("smwrap.ru", 5222);
+try {
+    reg.register("newuser", "secretpassword");
+    System.out.println("Аккаунт создан!");
+} finally {
+    reg.close();
+}
+```
+
+### Полный случай: сначала посмотреть форму сервера
+
+Сервер может требовать дополнительные поля (email, CAPTCHA, инвайт-код):
+
+```java
+RegistrationClient reg = new RegistrationClient("smwrap.ru", 5222);
+reg.setDomain("smwrap.ru");              // если домен JID ≠ хост
+// reg.setTrustAllCertificates(true);    // для self-signed сертификата
+
+try {
+    // 1. Запрашиваем форму
+    RegistrationForm form = reg.fetchForm();
+
+    System.out.println("Инструкции: " + form.getInstructions());
+    for (RegistrationForm.Field f : form.getFieldMap().values()) {
+        System.out.println("  " + f.getVar() + " [" + f.getType() + "]"
+                + (f.isRequired() ? " *" : "")
+                + (f.getOptions().isEmpty() ? "" : " " + f.getOptions()));
+    }
+
+    // 2. Заполняем обязательные поля
+    form.setValue("username", "newuser");
+    form.setValue("password", "secretpassword");
+    form.setValue("email", "newuser@example.com");
+
+    // 3. Отправляем
+    reg.submit(form);
+    System.out.println("Аккаунт newuser@smwrap.ru создан");
+} catch (XmppException e) {
+    System.err.println("Регистрация не удалась: " + e.getMessage());
+} finally {
+    reg.close();
+}
+```
+
+### Как это работает (поток станз)
+
+```
+Клиент                                  Сервер
+  |                                       |
+  |--- <stream:stream .../> ------------->|
+  |<-- <stream:stream .../> + <features> -|   features: <starttls/>, <register/>
+  |--- <starttls/> ---------------------->|
+  |<-- <proceed/> ------------------------|
+  |==== TLS handshake ====================|
+  |--- <stream:stream .../> ------------->|
+  |<-- <stream:stream .../> + <features> -|
+  |--- <iq type='get' id='reg_...'> ----->|
+  |    <query xmlns='jabber:iq:register'/>|
+  |<-- <iq type='result' id='reg_...'> ---|
+  |    <query><instructions/><username/>  |
+  |    <password/></query>                |
+  |--- <iq type='set' id='regset_...'> -->|
+  |    <query><username>new</username>    |
+  |    <password>secret</password></query>|
+  |<-- <iq type='result' id='regset_...'/>|
+  |--- </stream:stream> ----------------->|
+```
+
+### Классы
+
+| Класс | Назначение |
+|---|---|
+| `RegistrationClient` | Отдельный клиент: открывает стрим, шлёт IQ-формы, читает ответы |
+| `RegistrationModule` | XEP-0077: парсинг формы, сборка submit, разбор ошибок |
+| `RegistrationForm` | Модель формы (data-form XEP-0004 и классическая) |
+| `RegistrationForm.Field` | Описание одного поля (var, type, label, value, options, required) |
+
+### API `RegistrationClient`
+
+| Метод | Что делает |
+|---|---|
+| `fetchForm()` | Запрашивает форму регистрации у сервера |
+| `submit(form)` | Отправляет заполненную форму |
+| `register(user, pass)` | Шорткат: `fetchForm()` + заполнение + `submit()` |
+| `setDomain(domain)` | Если домен JID отличается от хоста подключения |
+| `setTrustAllCertificates(bool)` | Режим «доверять всем» сертификатам |
+| `close()` | Закрывает стрим |
+
+### Удаление аккаунта (XEP-0077 §3.2)
+
+Из активной аутентифицированной сессии:
+
+```java
+XmppClient client = new XmppClient("smwrap.ru", 5222);
+client.connect("user@smwrap.ru", "password");
+client.deleteAccount();   // после успеха соединение закрывается
+```
+
+### Примеры
+
+- `ru.miacomsoft.xmpp.example.RegisterUserExample` — интерактивная регистрация
+- `ru.miacomsoft.xmpp.example.DeleteAccountExample` — удаление аккаунта
+
+Запуск через переменные окружения:
+
+```bash
+# Регистрация
+XMPP_HOST=smwrap.ru XMPP_PORT=5222 XMPP_DOMAIN=smwrap.ru \
+  java ru.miacomsoft.xmpp.example.RegisterUserExample
+
+# Удаление
+XMPP_HOST=smwrap.ru XMPP_PORT=5222 \
+XMPP_JID=user@smwrap.ru XMPP_PASSWORD=secret \
+  java ru.miacomsoft.xmpp.example.DeleteAccountExample
+```
+
+Или через аргументы:
+
+```bash
+java ru.miacomsoft.xmpp.example.RegisterUserExample \
+     smwrap.ru 5222 newuser secretpassword
+```
+
+### Обработка ошибок регистрации
+
+`XmppException` приходит с расшифровкой:
+
+| Условие (`<error>`) | Сообщение |
+|---|---|
+| `conflict` | логин уже занят |
+| `not-allowed` | регистрация запрещена сервером |
+| `feature-not-implemented` | сервер не поддерживает XEP-0077 |
+| `bad-request` | неверный формат запроса |
+| `forbidden` | доступ запрещён |
+| `service-unavailable` | сервис недоступен |
+
+### Ограничения XEP-0077
+
+1. **Не все серверы разрешают регистрацию через клиент.** ejabberd по умолчанию — только через `ejabberdctl register`. Prosody — через `mod_register`, часто с whitelist IP.
+2. **CAPTCHA.** Если сервер включил её, в форме будет поле `captcha` (URL картинки) и `ocr`. Заполняются вручную.
+3. **Подтверждение по email.** Аккаунт активируется после перехода по ссылке из письма — `submit()` вернёт `result`, но вход заработает не сразу.
+4. **Rate limiting.** Сервер может ограничивать количество регистраций с одного IP.
+5. **TLS.** `RegistrationClient` автоматически делает STARTTLS, если сервер предлагает. Без TLS пароль идёт в открытом виде — не используйте такой сервер для регистрации.
+
+### Конфигурация Prosody для регистрации
+
+```lua
+-- /etc/prosody/prosody.cfg.lua
+modules_enabled = {
+    "roster"; "saslauth"; "tls"; "dialback"; "disco";
+    "carbons"; "pep"; "private"; "blocklist";
+    "vcard4"; "vcard_legacy"; "version";
+    "uptime"; "time"; "ping"; "register";  -- register для XEP-0077
+    "mam";                                  -- для XEP-0313
+}
+
+allow_registration = true
+registration_watchers = { "admin@smwrap.ru" }
+```
+
+---
 ## 🏗 Архитектура
 
 ```
 ru.miacomsoft.xmpp/
 ├── XmppClient.java                — главный класс клиента
+├── RegistrationClient.java        — клиент регистрации (XEP-0077)
 ├── XmppException.java             — исключение
 ├── connection/
 │   ├── XmppConnection.java        — TCP/TLS + парсер XML-станз
@@ -40,6 +216,8 @@ ru.miacomsoft.xmpp/
 │   ├── PresenceModule.java        — онлайн/офлайн
 │   ├── MessageModule.java         — сообщения
 │   ├── MamModule.java             — история (XEP-0313)
+│   ├── RegistrationModule.java    — регистрация (XEP-0077)
+│   ├── RegistrationForm.java      — модель формы регистрации
 │   └── MucModule.java             — групповые чаты (заглушка)
 ├── model/
 │   ├── ChatMessage.java           — модель сообщения
@@ -53,10 +231,13 @@ ru.miacomsoft.xmpp/
 ├── listener/
 │   └── EventBus.java              — публикация событий
 └── example/
-└── SimpleClient.java          — пример использования
+    ├── SimpleClient.java              — пример основного клиента
+    ├── RegisterUserExample.java       — пример регистрации (XEP-0077)
+    └── DeleteAccountExample.java      — пример удаления аккаунта
 ```
 
 **Ключевая идея:** `XmppClient` **не знает** о конкретных XEP. Вся логика — в модулях, наследующих `XmppModule`. Модули регистрируются в конструкторе `XmppClient`.
+**Отдельно:** `RegistrationClient` — самостоятельный класс, потому что регистрация нового пользователя требует **собственного XMPP-стрима** (сервер не позволяет регистрировать нового пользователя из аутентифицированной сессии). Он использует `RegistrationModule` и `RegistrationForm` для работы с XEP-0077 и XEP-0004.
 
 ---
 
